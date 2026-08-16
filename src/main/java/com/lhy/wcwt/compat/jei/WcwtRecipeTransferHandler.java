@@ -171,6 +171,10 @@ public class WcwtRecipeTransferHandler
         if ((name == null || name.isBlank()) && recipeBase != null) {
             name = ExtendedAePlusUploadCompat.deriveSearchKeyFromUnknownRecipe(recipeBase);
         }
+        String localized = WcwtRecipeCategoryLocalization.localize(recipe, recipeBase);
+        if (localized != null && !localized.isBlank()) {
+            name = localized;
+        }
         if (name != null && !name.isBlank()) {
             ExtendedAePlusUploadCompat.setLastProviderSearchKey(name);
         }

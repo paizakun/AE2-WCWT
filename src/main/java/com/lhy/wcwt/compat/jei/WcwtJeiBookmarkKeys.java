@@ -29,6 +29,10 @@ public final class WcwtJeiBookmarkKeys {
         jeiRuntime = runtime;
     }
 
+    static @Nullable IJeiRuntime getRuntime() {
+        return jeiRuntime;
+    }
+
     public static List<AEKey> getBookmarkKeys() {
         List<AEKey> merged = new ArrayList<>();
         addUniqueKeys(merged, loadJeiBookmarkKeys());
