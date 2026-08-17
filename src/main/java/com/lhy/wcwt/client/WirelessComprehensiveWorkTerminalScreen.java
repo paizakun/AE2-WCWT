@@ -262,6 +262,20 @@ public class WirelessComprehensiveWorkTerminalScreen extends CraftingTermScreen<
     private long lastPatternProviderRefreshRequestMs;
     private long lastPatternProviderSubscriptionRequestMs;
     private String resolvedPatternManagementSearchText = "";
+    /**
+     * Provider Search 栏文本的客户端本地记忆，跨越 Screen 重建（每次打开终端都会 new 一个新
+     * Screen 实例）依然保留，直到客户端进程重启或手动清空为止。仅用于恢复输入框显示，不涉及
+     * 服务端/物品 NBT 持久化。
+     */
+    private static String lastPatternManagementSearchText = "";
+    /**
+     * 上一次点击 Encode 时识别出的（非空）搜索键，以及当时的配方"指纹"
+     * （{@link #currentRecipeSignature()}）。只在配方指纹不变的情况下才会被当作回退来源——
+     * 用户清空搜索栏后，只要没有改动材料/配方本身就再次点击 Encode，仍然应该用回这个键；
+     * 一旦材料/配方变了，指纹跟着变，旧键立刻失效，不会串到不相关的配方上。
+     */
+    private String lastEncodeSearchKey = "";
+    private List<ItemStack> lastEncodeRecipeSignature = List.of();
     private List<PatternProviderSlotSyncPacket.Mapping> lastPatternProviderSlotSync = List.of();
     private boolean forcePatternProviderSlotSnapshot;
     private final ExtendedPanelLayout mainLayout = ExtendedPanelLayout.load(
@@ -510,6 +524,11 @@ public class WirelessComprehensiveWorkTerminalScreen extends CraftingTermScreen<
         patternManageSearchField.setPlaceholder(Component.translatable("gui.wcwt.pattern_management.provider_search"));
         patternManageSearchField.setResponder(str -> onPatternManagementSearchChanged());
         patternManageSearchField.setMaxLength(64);
+        // 恢复上次关闭终端前 Provider Search 栏的内容（跨 Screen 实例的客户端本地记忆）。
+        if (!lastPatternManagementSearchText.isEmpty()) {
+            patternManageSearchField.setValue(lastPatternManagementSearchText);
+            onPatternManagementSearchChanged();
+        }
 
         patternManageMappingField = addWcwtManagementTextField("manage_mapping");
         patternManageMappingField.setPlaceholder(Component.translatable("gui.wcwt.pattern_management.mapping_input"));
@@ -1865,13 +1884,43 @@ public class WirelessComprehensiveWorkTerminalScreen extends CraftingTermScreen<
     }
 
     private void handleEncodePatternButton() {
-        String searchKey = consumeEaepProviderSearchKey();
+        // 先消费掉 EAEP 侧的 JEI/EMI 转送缓存（无论是否采用，都要清空，避免残留到下一次编码）；
+        // 但栏内如果有手动输入的内容，必须优先于这个缓存值——否则用户在转送之后手动改写搜索栏
+        // 会被这个「上一次转送」的旧值悄悄覆盖回去，看起来像是输入没有生效。
+        String consumedEaepKey = consumeEaepProviderSearchKey();
+        List<ItemStack> currentSignature = currentRecipeSignature();
+        boolean sameRecipeAsLastEncode = !lastEncodeRecipeSignature.isEmpty()
+                && recipeSignaturesEqual(currentSignature, lastEncodeRecipeSignature);
+        String searchKey = null;
         boolean generatedFallbackSearchKey = false;
-        if ((searchKey == null || searchKey.isBlank()) && patternManageSearchField != null) {
+        if (patternManageSearchField != null) {
             String fieldValue = patternManageSearchField.getValue();
             if (fieldValue != null && !fieldValue.isBlank()) {
                 searchKey = fieldValue.trim();
             }
+        }
+        if ((searchKey == null || searchKey.isBlank())
+                && consumedEaepKey != null && !consumedEaepKey.isBlank()) {
+            searchKey = consumedEaepKey;
+        }
+        // 栏为空、也没有新的 JEI/EMI 转送时，尝试从当前编码预览槽里已有的样板自带元数据回退——
+        // 覆盖"同一个配方，手动清空过搜索栏后再次编码"的场景：配方本身没变，
+        // 之前已经识别过的 provider 信息应当依然可用，而不是因为栏被清空就丢失。
+        if (searchKey == null || searchKey.isBlank()) {
+            Slot encodedPatternSlot = getEncodedPatternSlot();
+            String fromEncodedSlot = encodedPatternSlot != null
+                    ? PatternUploadMetadata.getProviderSearchText(encodedPatternSlot.getItem())
+                    : null;
+            if (fromEncodedSlot != null && !fromEncodedSlot.isBlank()) {
+                searchKey = fromEncodedSlot;
+            }
+        }
+        // 最后回退到"上一次 Encode 时用过的键"——但只在配方指纹（材料/输出配置）与上次相同时才生效，
+        // 否则会把旧配方的键错误地带到新配方上（这是之前 lastNonBlankResolvedSearchKey 方案的问题）。
+        // 材料一旦被用户改动，指纹立刻变化，这个回退自动失效。
+        if ((searchKey == null || searchKey.isBlank()) && sameRecipeAsLastEncode
+                && !lastEncodeSearchKey.isEmpty()) {
+            searchKey = lastEncodeSearchKey;
         }
         if ((searchKey == null || searchKey.isBlank()) && patternEncodingMode != EncodingMode.PROCESSING) {
             searchKey = "crafting";
@@ -1883,6 +1932,10 @@ public class WirelessComprehensiveWorkTerminalScreen extends CraftingTermScreen<
         if (!resolvedSearchKey.isBlank()) {
             resolvedPatternManagementSearchText = resolvedSearchKey;
         }
+        lastEncodeRecipeSignature = currentSignature;
+        lastEncodeSearchKey = (!resolvedSearchKey.isBlank() && !generatedFallbackSearchKey)
+                ? resolvedSearchKey
+                : "";
         long preferredProviderId = preferredPatternProviderIdForUpload(searchKey);
         String uploadProviderName = uploadProviderNameForStatus(preferredProviderId, searchKey);
         boolean useEaepUploadScreen = patternManagementUploadEnabled
@@ -1893,7 +1946,10 @@ public class WirelessComprehensiveWorkTerminalScreen extends CraftingTermScreen<
                 || WcwtClientConfig.autoFillPatternProviderSearchWhenUploadDisabled())
                 && searchKey != null && !searchKey.isBlank()
                 && patternManageSearchField != null && !generatedFallbackSearchKey) {
-            patternManageSearchField.setValue(searchKey);
+            // 已存在映射时，栏内直接显示解析后的供应器名（而不是原始配方分类名），
+            // 与实际用于匹配供应器的文本保持一致，避免"栏里写的是 A，实际搜索的却是 B"的困惑。
+            // 无映射时 resolvedSearchKey 会回退成 searchKey 本身，行为不变。
+            patternManageSearchField.setValue(resolvedSearchKey);
         }
         if (encodePatternButton != null) {
             encodePatternButton.setFocused(false);
@@ -1908,6 +1964,47 @@ public class WirelessComprehensiveWorkTerminalScreen extends CraftingTermScreen<
                 uploadProviderName,
                 WcwtClientConfig.patternUploadFailFallbackToEditor(),
                 useEaepUploadScreen));
+    }
+
+    /**
+     * 当前编码模式下，参与配方的所有槽位内容快照（按模式取用对应的槽位组），
+     * 用作判断"这次 Encode 和上次是不是同一个配方"的指纹。
+     */
+    private List<ItemStack> currentRecipeSignature() {
+        List<Slot> relevantSlots = switch (patternEncodingMode) {
+            case CRAFTING -> menu.getSlots(WcwtSlotSemantics.WCWT_PATTERN_CRAFTING_GRID);
+            case PROCESSING -> {
+                var slots = new ArrayList<>(menu.getSlots(WcwtSlotSemantics.WCWT_PATTERN_PROCESSING_INPUTS));
+                slots.addAll(menu.getSlots(WcwtSlotSemantics.WCWT_PATTERN_PROCESSING_OUTPUTS));
+                yield slots;
+            }
+            case SMITHING_TABLE -> {
+                var slots = new ArrayList<>(menu.getSlots(WcwtSlotSemantics.WCWT_PATTERN_SMITHING_TEMPLATE));
+                slots.addAll(menu.getSlots(WcwtSlotSemantics.WCWT_PATTERN_SMITHING_BASE));
+                slots.addAll(menu.getSlots(WcwtSlotSemantics.WCWT_PATTERN_SMITHING_ADDITION));
+                yield slots;
+            }
+            case STONECUTTING -> menu.getSlots(WcwtSlotSemantics.WCWT_PATTERN_STONECUTTING_INPUT);
+        };
+        List<ItemStack> signature = new ArrayList<>(relevantSlots.size());
+        for (Slot slot : relevantSlots) {
+            signature.add(slot.getItem().copy());
+        }
+        return signature;
+    }
+
+    private static boolean recipeSignaturesEqual(List<ItemStack> a, List<ItemStack> b) {
+        if (a.size() != b.size()) {
+            return false;
+        }
+        for (int i = 0; i < a.size(); i++) {
+            ItemStack left = a.get(i);
+            ItemStack right = b.get(i);
+            if (left.getCount() != right.getCount() || !ItemStack.isSameItemSameComponents(left, right)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private boolean hasMultipleMatchingProvidersWithSameName(@Nullable String searchKey) {
@@ -2623,6 +2720,7 @@ public class WirelessComprehensiveWorkTerminalScreen extends CraftingTermScreen<
     }
 
     private void onPatternManagementSearchChanged() {
+        lastPatternManagementSearchText = currentPatternManagementSearchText();
         resolvedPatternManagementSearchText = resolveClientProviderSearchText(currentPatternManagementSearchText());
         rebuildPatternManagementRows();
         patternProviderSlotLayoutDirty = true;
@@ -2862,6 +2960,16 @@ public class WirelessComprehensiveWorkTerminalScreen extends CraftingTermScreen<
 
         lastEncodedPatternForUploadSync = encodedPattern.isEmpty() ? ItemStack.EMPTY : encodedPattern.copy();
         lastEncodedPatternUploadSearchText = uploadSearchText;
+        applyUploadSearchTextToField(uploadSearchText);
+    }
+
+    /**
+     * 把样板自带的 provider 元数据写回 Provider Search 栏，与 JEI/EMI 转送时的识别效果对齐；
+     * 元数据为空或栏内已是同一文本时不做改动。
+     */
+    private void applyUploadSearchTextToField(@Nullable String uploadSearchText) {
+        logPatternUploadDebug("applyUploadSearchTextToField uploadSearchText={}, currentField={}",
+                uploadSearchText, patternManageSearchField != null ? patternManageSearchField.getValue() : null);
         if (uploadSearchText == null || uploadSearchText.isBlank() || patternManageSearchField == null) {
             return;
         }
@@ -2872,6 +2980,20 @@ public class WirelessComprehensiveWorkTerminalScreen extends CraftingTermScreen<
             patternProviderSlotLayoutDirty = true;
         }
         syncSelectedPatternProviderFromSearch(uploadSearchText);
+    }
+
+    /**
+     * 缓存槽点击（放入/取出/选中）后，用槽内样板自带的 provider 元数据尝试同步 Provider Search；
+     * syncPatternManagementSearchFromEncodedPatternSlot() 只监听编码预览槽，样板一旦挪进缓存区
+     * 就脱离了它的监视范围，这里补上缓存区场景下同等的识别时机。
+     */
+    private void syncPatternManagementSearchFromCacheSlot(@Nullable Slot slot) {
+        logPatternUploadDebug("syncPatternManagementSearchFromCacheSlot slot={}, hasItem={}, item={}",
+                slot, slot != null && slot.hasItem(), slot != null ? slot.getItem() : null);
+        if (slot == null || !slot.hasItem()) {
+            return;
+        }
+        applyUploadSearchTextToField(PatternUploadMetadata.getProviderSearchText(slot.getItem()));
     }
 
     @Nullable
@@ -4903,17 +5025,38 @@ public class WirelessComprehensiveWorkTerminalScreen extends CraftingTermScreen<
 
     @Override
     protected void slotClicked(Slot slot, int slotIdx, int mouseButton, ClickType clickType) {
-        if (patternSelectionLockedMode) {
-            int cacheIndex = getPatternCacheSlotIndex(slot);
-            if (cacheIndex >= 0) {
-                if (mouseButton == 0 && clickType == ClickType.PICKUP && slot != null && slot.hasItem()) {
+        int cacheIndex = getPatternCacheSlotIndex(slot);
+        if (patternSelectionLockedMode && cacheIndex >= 0) {
+            // Advanced Encode 面板打开时，只对左键（选中/放入）和 shift+左键（取出）做特殊处理；
+            // 其余点击类型（右键等）不拦截，直接放行 vanilla 行为。
+            if (mouseButton == 0 && clickType == ClickType.PICKUP) {
+                if (slot != null && slot.hasItem()) {
                     selectedPatternCacheIndex = cacheIndex;
                     PacketDistributor.sendToServer(new PatternSelectionPacket(cacheIndex));
+                    return;
                 }
-                return; // 高级编码 UI 打开时锁定缓存槽，禁止拿走/放入样板。
+                if (slot != null && !slot.hasItem() && !menu.getCarried().isEmpty()) {
+                    super.slotClicked(slot, slotIdx, mouseButton, clickType);
+                    syncPatternManagementSearchFromCacheSlot(slot);
+                    return;
+                }
+                return;
             }
+            if (mouseButton == 0 && clickType == ClickType.QUICK_MOVE) {
+                super.slotClicked(slot, slotIdx, mouseButton, clickType);
+                syncPatternManagementSearchFromCacheSlot(slot);
+                return;
+            }
+            super.slotClicked(slot, slotIdx, mouseButton, clickType);
+            syncPatternManagementSearchFromCacheSlot(slot);
+            return;
         }
         super.slotClicked(slot, slotIdx, mouseButton, clickType);
+        if (cacheIndex >= 0) {
+            // 与 JEI/EMI 转送识别同等待遇：（重新）放进缓存槽的样板自带 provider 元数据时
+            // 同步进 Provider Search，弥补编码预览槽同步逻辑不监视缓存区的盲区。
+            syncPatternManagementSearchFromCacheSlot(slot);
+        }
     }
     
     private void renderExtendedUI(GuiGraphics guiGraphics, int mouseX, int mouseY) {
@@ -4967,12 +5110,22 @@ public class WirelessComprehensiveWorkTerminalScreen extends CraftingTermScreen<
         int relX = (int) Math.round(mouseX - leftPos);
         int relY = (int) Math.round(mouseY - topPos);
         if (button == 1) {
+            // manage_search 栏（left=230,bottom=95~107）与样板缓存区（left=176 起，
+            // 底部滚动窗口 bottom=109~143）在布局上几乎贴边，isMouseOver 的命中框在边界
+            // 处可能与缓存槽重叠。缓存槽上的右键应优先按槽位处理（取出样板），
+            // 因此这里先用真实的槽位命中测试排除掉这种重叠，而不是让文本框抢先吞掉点击。
+            var rightClickSlot = getSlotAt(mouseX, mouseY);
+            boolean overCacheSlot = rightClickSlot != null && getPatternCacheSlotIndex(rightClickSlot) >= 0;
             // AETextField 使用屏幕绝对坐标，须与 MEStorageScreen 一致使用 isMouseOver（而非 GUI 相对坐标）
-            if (patternManageSearchField != null && patternManageSearchField.isMouseOver(mouseX, mouseY)) {
+            if (!overCacheSlot && patternManageSearchField != null
+                    && patternManageSearchField.isMouseOver(mouseX, mouseY)) {
                 patternManageSearchField.setValue("");
+                patternManageSearchField.setFocused(true);
+                setFocused(patternManageSearchField);
                 return true;
             }
-            if (patternManageMappingField != null && patternManageMappingField.isMouseOver(mouseX, mouseY)) {
+            if (!overCacheSlot && patternManageMappingField != null
+                    && patternManageMappingField.isMouseOver(mouseX, mouseY)) {
                 patternManageMappingField.setValue("");
                 return true;
             }
