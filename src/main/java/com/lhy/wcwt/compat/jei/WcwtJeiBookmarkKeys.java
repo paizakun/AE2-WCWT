@@ -29,6 +29,10 @@ public final class WcwtJeiBookmarkKeys {
         jeiRuntime = runtime;
     }
 
+    static @Nullable IJeiRuntime getRuntime() {
+        return jeiRuntime;
+    }
+
     public static boolean isSearchFieldFocused() {
         IJeiRuntime runtime = jeiRuntime;
         if (runtime == null) {

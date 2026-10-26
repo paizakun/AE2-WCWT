@@ -27,7 +27,19 @@ public final class WcwtRecipeTransferCommon {
     }
 
     public static void updateEaepProviderSearchKey(Object recipeBase, @Nullable Recipe<?> recipe, EncodingMode mode) {
+        updateEaepProviderSearchKey(recipeBase, recipe, mode, null);
+    }
+
+    /**
+     * @param preferredLocalizedLabel 调用方已知的、本地化过的分类名（如 EMI 的 EmiRecipeCategory#getName），
+     *                                优先于内部 recipe-type id 使用，找不到时回退到原有解析逻辑。
+     */
+    public static void updateEaepProviderSearchKey(Object recipeBase, @Nullable Recipe<?> recipe, EncodingMode mode,
+                                                    @Nullable String preferredLocalizedLabel) {
         ExtendedAePlusUploadCompat.captureRecipeSearchKey(recipeBase, recipe, mode);
+        if (preferredLocalizedLabel != null && !preferredLocalizedLabel.isBlank()) {
+            ExtendedAePlusUploadCompat.setLastProviderSearchKey(preferredLocalizedLabel.trim());
+        }
     }
 
     public static Map<AEKey, Integer> getEmiFavoritePriorities() {

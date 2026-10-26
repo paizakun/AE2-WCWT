@@ -27,6 +27,16 @@ public final class PlusMapping {
         }
     }
 
+    /**
+     * 用调用方已知的、更贴切的名称（例如 EMI/JEI 的本地化分类标题）覆盖掉
+     * {@link #captureRecipeSearchKey} 刚写入的值。空白值不做任何改动。
+     */
+    public static void setLastProviderSearchKey(@Nullable String value) {
+        if (value != null && !value.isBlank()) {
+            ExtendedAEPatternUploadUtil.setLastProviderSearchKey(value);
+        }
+    }
+
     public static void captureRecipeSearchKey(@Nullable Object rawRecipe) {
         Recipe<?> recipe = null;
         Object recipeBase = rawRecipe;

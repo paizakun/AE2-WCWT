@@ -23,6 +23,16 @@ public final class ExtendedAePlusUploadCompat {
         return PlusPresence.available() ? PlusMapping.consumeLastProviderSearchKey() : null;
     }
 
+    /**
+     * 用调用方已知的、更贴切的名称（例如 EMI/JEI 的本地化分类标题）覆盖掉
+     * {@link #captureRecipeSearchKey} 刚写入的值。空白值不做任何改动。
+     */
+    public static void setLastProviderSearchKey(@Nullable String value) {
+        if (PlusPresence.available()) {
+            PlusMapping.setLastProviderSearchKey(value);
+        }
+    }
+
     public static String resolveProviderSearchKey(@Nullable String rawKey) {
         if (!PlusPresence.available()) {
             return rawKey == null ? "" : rawKey.trim();

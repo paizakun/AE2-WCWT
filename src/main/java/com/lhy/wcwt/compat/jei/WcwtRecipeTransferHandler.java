@@ -198,7 +198,8 @@ public class WcwtRecipeTransferHandler
     }
 
     public static void updateEaepProviderSearchKey(Object recipeBase, @Nullable Recipe<?> recipe, EncodingMode mode) {
-        WcwtRecipeTransferCommon.updateEaepProviderSearchKey(recipeBase, recipe, mode);
+        String localized = WcwtRecipeCategoryLocalization.localize(recipe, recipeBase);
+        WcwtRecipeTransferCommon.updateEaepProviderSearchKey(recipeBase, recipe, mode, localized);
     }
 
     static EncodingMode getTransferMode(@Nullable Object recipeObject, IRecipeSlotsView slotsView) {

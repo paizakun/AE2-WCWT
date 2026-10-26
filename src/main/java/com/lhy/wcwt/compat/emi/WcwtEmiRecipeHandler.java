@@ -199,8 +199,11 @@ public class WcwtEmiRecipeHandler implements EmiRecipeHandler<WirelessComprehens
             return false;
         }
 
+        String categoryLabel = recipe.getCategory() != null
+                ? recipe.getCategory().getName().getString()
+                : null;
         WcwtRecipeTransferCommon.updateEaepProviderSearchKey(recipe, recipe.getBackingRecipe() != null
-                ? recipe.getBackingRecipe().value() : null, mode);
+                ? recipe.getBackingRecipe().value() : null, mode, categoryLabel);
         PacketDistributor.sendToServer(new JeiCraftingTransferPacket(inputs, outputs, false, mode));
         return true;
     }
